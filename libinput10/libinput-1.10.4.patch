@@ -1,0 +1,192 @@
+diff -Naur libinput-1.10.4.unmodified/src/evdev.c libinput-1.10.4/src/evdev.c
+--- libinput-1.10.4.unmodified/src/evdev.c	2018-04-09 06:53:52.000000000 +0200
++++ libinput-1.10.4/src/evdev.c	2018-09-25 16:08:26.687858759 +0200
+@@ -108,6 +108,40 @@
+ 	return false;
+ }
+
++/*added {*/
++/* Modifiy the behavior of ‘evdev_update_key_down_count()’ so that pressing
++   KEY_CAPSLOCK has no effect if Caps Lock is already active (i.e. the behavior
++   that used to be the default in earlier times)? */
++#define CLASSIC_TYPEWRITER_CAPS       1
++
++/* Should pressing Shift cancel Caps lock, even if it's used to change the
++   capitalization of one (or several) letters? */
++#define SHIFT_ALWAYS_CANCELS_CAPS     1
++
++/* [Development only] Print log messages to /var/log/syslog? */
++#define LOG_KEYBOARD_EVENTS           0
++
++#if CLASSIC_TYPEWRITER_CAPS == 1
++  struct evdev_device_additional {
++    int    fd;                      /* File descriptor of input device */
++
++    /* Caps lock management: */
++    int    caps_active;             /* Caps lock currently active? */
++
++    int    shift_keycode;           /* <0: no shift key pressed; >=0: keycode of pressed Shift key */
++    int    shifted_keys;            /* Number of key presses between Shift press and release */
++
++    #if SHIFT_ALWAYS_CANCELS_CAPS == 1
++    int    sim_caps_release;        /* Simulate Shift keypress to release Caps? */
++    #endif
++  };
++
++  #if LOG_KEYBOARD_EVENTS == 1
++  #include <syslog.h>
++  #endif
++#endif
++/*added }*/
++
+ int
+ evdev_update_key_down_count(struct evdev_device *device,
+ 			    int code,
+@@ -116,6 +150,131 @@
+ 	int key_count;
+ 	assert(code >= 0 && code < KEY_CNT);
+
++#if CLASSIC_TYPEWRITER_CAPS == 1 /*added {*/
++        static struct evdev_device_additional *
++          input_dev = NULL;
++        static ssize_t
++          input_cnt = 0, dev_index;
++
++        #if LOG_KEYBOARD_EVENTS == 1
++        static int
++          log_kbd_events = 0;
++
++        if (log_kbd_events == 0)
++        {
++          openlog ("slog", LOG_PID|LOG_CONS, LOG_USER);
++          log_kbd_events = 1;
++        }
++        #endif
++
++        for (dev_index=input_cnt-1; dev_index >= 0; --dev_index)
++          if (input_dev[dev_index].fd == device->fd)
++            break;
++
++        if (dev_index < 0)
++        {
++          dev_index = input_cnt++;
++          input_dev = (struct evdev_device_additional *)realloc (input_dev, input_cnt * sizeof(*input_dev));
++
++          /* Caps lock management: */
++          input_dev[dev_index].fd               = device->fd;
++          input_dev[dev_index].caps_active      =  0;
++          input_dev[dev_index].shift_keycode    = -1;
++          input_dev[dev_index].shifted_keys     =  0;
++          #if SHIFT_ALWAYS_CANCELS_CAPS == 1
++          input_dev[dev_index].sim_caps_release =  0;
++          #endif
++        }
++
++        #if SHIFT_ALWAYS_CANCELS_CAPS == 1
++        /* Code fragment ripped out of ‘fallback_return_to_neutral_state’: */
++        if (input_dev[dev_index].sim_caps_release)
++        {
++          struct libinput *libinput = evdev_libinput_context(device);
++          uint64_t time;
++
++          if ((time = libinput_now(libinput)) != 0)
++          {
++            #if LOG_KEYBOARD_EVENTS == 1
++            if (log_kbd_events)
++              syslog (LOG_ERR, "fd=%d: keyboard_notify_key(time=%llu, code=%d, state=%d), LEFTSHIFT=1\n",
++                               device->fd, (unsigned long long)time-60000ull,
++                               KEY_LEFTSHIFT, LIBINPUT_BUTTON_STATE_PRESSED);
++            #endif
++
++            keyboard_notify_key (&device->base, time-60000ull, KEY_LEFTSHIFT, LIBINPUT_KEY_STATE_PRESSED);
++
++            keyboard_notify_key (&device->base, time-30000ull, KEY_LEFTSHIFT, LIBINPUT_KEY_STATE_RELEASED);
++
++            #if LOG_KEYBOARD_EVENTS == 1
++            if (log_kbd_events)
++              syslog (LOG_ERR, "fd=%d: keyboard_notify_key(time=%llu, code=%d, state=%d), LEFTSHIFT=0\n",
++                               device->fd, (unsigned long long)time-30000ull,
++                               KEY_LEFTSHIFT, LIBINPUT_BUTTON_STATE_RELEASED);
++            #endif
++
++            device->key_count[KEY_CAPSLOCK] = 0;
++          }
++
++          input_dev[dev_index].caps_active = 0;
++          input_dev[dev_index].sim_caps_release = 0;
++        }
++        #endif
++
++        #if LOG_KEYBOARD_EVENTS == 1
++        if (code == KEY_CAPSLOCK && input_dev[dev_index].caps_active)
++          if (log_kbd_events)
++            syslog (LOG_ERR, "fd=%d: caps=%d, shift_keycode=%d, shifted_keys=%d | IGN keycode=%d (%s)\n",
++                             device->fd, input_dev[dev_index].caps_active,
++                                         input_dev[dev_index].shift_keycode,
++                                         input_dev[dev_index].shifted_keys,
++                                         code, (pressed?"DN":"UP"));
++        #endif
++
++        /* CapsLock can only be disabled by pressing Shift: */
++        key_count = device->key_count[code];
++
++        if (code == KEY_CAPSLOCK)
++        {
++          if (input_dev[dev_index].caps_active)
++            return key_count;  /* Ignore event! */
++        }
++
++        if (pressed)
++        {
++          /* Left/Right Shift down? */
++          if (input_dev[dev_index].shift_keycode >= 0)
++          {
++            if (code != input_dev[dev_index].shift_keycode)
++              ++input_dev[dev_index].shifted_keys;
++          }
++          else
++          if (code == KEY_LEFTSHIFT || code == KEY_RIGHTSHIFT)
++            input_dev[dev_index].shift_keycode = code;
++        }
++        else
++        {
++          if (code == KEY_CAPSLOCK)
++          {
++            input_dev[dev_index].caps_active = 1;
++          }
++          else
++          if (code == input_dev[dev_index].shift_keycode)
++          {
++            /* Nothing to do -- normal code path will disable Caps lock: */
++            if (input_dev[dev_index].shifted_keys == 0)
++              input_dev[dev_index].caps_active = 0;
++            #if SHIFT_ALWAYS_CANCELS_CAPS == 1
++            else
++              input_dev[dev_index].sim_caps_release = 1;
++            #endif
++
++            input_dev[dev_index].shift_keycode = -1;
++            input_dev[dev_index].shifted_keys  =  0;
++          }
++        }
++#endif /*added }*/
++
+ 	if (pressed) {
+ 		key_count = ++device->key_count[code];
+ 	} else {
+@@ -129,6 +288,15 @@
+ 				       libevdev_event_code_get_name(EV_KEY, code));
+ 	}
+
++#if CLASSIC_TYPEWRITER_CAPS == 1 && LOG_KEYBOARD_EVENTS == 1 /*added {*/
++        if (log_kbd_events)
++          syslog (LOG_ERR, "fd=%d: caps=%d, shift_keycode=%d, shifted_keys=%d | keycode=%d (%s)\n",
++                           device->fd, input_dev[dev_index].caps_active,
++                                       input_dev[dev_index].shift_keycode,
++                                       input_dev[dev_index].shifted_keys,
++                                       code, (pressed?"DN":"UP"));
++#endif /*added }*/
++
+ 	return key_count;
+ }
+

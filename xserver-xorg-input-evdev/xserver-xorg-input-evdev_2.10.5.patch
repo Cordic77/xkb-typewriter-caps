@@ -1,0 +1,222 @@
+diff -Naur xserver-xorg-input-evdev-2.10.5.unmodified/src/evdev.c xserver-xorg-input-evdev-2.10.5/src/evdev.c
+--- xserver-xorg-input-evdev-2.10.5.unmodified/src/evdev.c	2017-01-03 02:26:00.000000000 +0100
++++ xserver-xorg-input-evdev-2.10.5/src/evdev.c	2018-09-25 14:15:49.999900418 +0200
+@@ -274,12 +274,172 @@
+     return &pEvdev->queue[pEvdev->num_queue - 1];
+ }
+
++/*added {*/
++/* Modifiy the behavior of ‘evdev_update_key_down_count()’ so that pressing
++   KEY_CAPSLOCK has no effect if Caps Lock is already active (i.e. the behavior
++   that used to be the default in earlier times)? */
++#define CLASSIC_TYPEWRITER_CAPS       1
++
++/* Should pressing Shift cancel Caps lock, even if it's used to change the
++   capitalization of one (or several) letters? */
++#define SHIFT_ALWAYS_CANCELS_CAPS     1
++
++/* [Development only] Print log messages to /var/log/syslog? */
++#define LOG_KEYBOARD_EVENTS           0
++
++#if CLASSIC_TYPEWRITER_CAPS == 1
++  /* N.b.: InputInfoPtr is declared in /usr/include/xorg/xf86Xinput.h */
++  struct evdev_device_additional {
++    int    fd;                      /* File descriptor of input device */
++
++    /* Caps lock management: */
++    int    caps_active;             /* Caps lock currently active? */
++
++    int    shift_keycode;           /* <0: no shift key pressed; >=0: keycode of pressed Shift key */
++    int    shifted_keys;            /* Number of key presses between Shift press and release */
++
++    #if SHIFT_ALWAYS_CANCELS_CAPS == 1
++    int    sim_caps_release;        /* Simulate Shift keypress to release Caps? */
++    #endif
++  };
++
++  #if LOG_KEYBOARD_EVENTS == 1
++  #include <syslog.h>
++  #endif
++#endif
++/*added }*/
++
+ void
+ EvdevQueueKbdEvent(InputInfoPtr pInfo, struct input_event *ev, int value)
+ {
+     int code = ev->code + MIN_KEYCODE;
+     EventQueuePtr pQueue;
+
++#if CLASSIC_TYPEWRITER_CAPS == 1 /*added {*/
++    static struct evdev_device_additional *
++      input_dev = NULL;
++    static ssize_t
++      input_cnt = 0, dev_index;
++
++    #if LOG_KEYBOARD_EVENTS == 1
++    static int
++      log_kbd_events = 0;
++
++    if (log_kbd_events == 0)
++    {
++      openlog ("slog", LOG_PID|LOG_CONS, LOG_USER);
++      log_kbd_events = 1;
++    }
++    #endif
++
++    /* hook into linux key event handling [2014-12-20] (uettli):
++       http://stackoverflow.com/questions/27581500/hook-into-linux-key-event-handling#answer-27625219
++
++       The brute-force way would be to modyfy/rebuild xserver-xorg-input-evdev
++       package and replace /usr/lib/xorg/modules/input/evdev_drv.so. I would
++       start by trying to modify EvdevQueueKbdEvent() function in
++       xf86-input-evdev-2.9.0/src/evdev.c. Doesn't look very elegant solution,
++       but I think you'll get flexibility to modify keyboard event queue.
++
++       Less intrusive solution may be possible using XGRabKey() (some details
++       here) and/or XGrabKeyboard().
++    */
++    for (dev_index=input_cnt-1; dev_index >= 0; --dev_index)
++      if (input_dev[dev_index].fd == pInfo->fd)
++        break;
++
++    if (dev_index < 0)
++    {
++      dev_index = input_cnt++;
++      input_dev = (struct evdev_device_additional *)realloc (input_dev, input_cnt * sizeof(*input_dev));
++
++      /* Caps lock management: */
++      input_dev[dev_index].fd            = pInfo->fd;
++      input_dev[dev_index].caps_active   =  0;
++      input_dev[dev_index].shift_keycode = -1;
++      input_dev[dev_index].shifted_keys  =  0;
++      #if SHIFT_ALWAYS_CANCELS_CAPS == 1
++      input_dev[dev_index].sim_caps_release =  0;
++      #endif
++    }
++
++    /* input_event structure description (from linux/input.h)
++       http://stackoverflow.com/questions/16695432/input-event-structure-description-from-linux-input-h#answer-16695758
++
++       The struct input_event is, among others, defined in include/linux/input.h.
++
++       From 5. Event interface in Linux kernel Documentation/input/input.txt
++       (and modified to provide the correct header file names):
++
++       * time  is the timestamp, it returns the time at which the event happened.
++       * type  is for example EV_REL for relative moment, EV_KEY for a keypress
++               or release: /usr/include/linux/input-event-codes.h
++       * code  is event code, for example REL_X or KEY_BACKSPACE, again a
++               complete list is in /usr/include/linux/input-event-codes.h
++       * value is the value the event carries:
++         - Either a relative change for EV_REL,
++         - absolute new value for EV_ABS (joysticks ...), or
++         - 0 for EV_KEY for release, 1 for keypress and 2 for autorepeat.
++    */
++    #define EV_KEY_RELEASE      0
++    #define EV_KEY_PRESS        1
++    #define EV_KEY_AUTOREPEAT   2
++
++    #if LOG_KEYBOARD_EVENTS == 1
++    if (ev->code == KEY_CAPSLOCK && input_dev[dev_index].caps_active)
++      if (log_kbd_events)
++        syslog (LOG_ERR, "fd=%d: caps=%d, shift_keycode=%d, shifted_keys=%d | IGN keycode=%d (%s)\n",
++                         pInfo->fd, input_dev[dev_index].caps_active,
++                                    input_dev[dev_index].shift_keycode,
++                                    input_dev[dev_index].shifted_keys,
++                         ev->code, (value==EV_KEY_RELEASE?"UP":(value==EV_KEY_PRESS?"DN":"RP")));
++    #endif
++
++    if (ev->type == EV_KEY)
++    {
++      /* CapsLock can only be disabled by pressing Shift: */
++      if (ev->code == KEY_CAPSLOCK)
++      {
++        if (input_dev[dev_index].caps_active)
++          return;  /* Ignore event! */
++      }
++
++      if (value == EV_KEY_PRESS)
++      {
++        /* Left/Right Shift down? */
++        if (input_dev[dev_index].shift_keycode >= 0)
++        {
++          if (ev->code != input_dev[dev_index].shift_keycode)
++            ++input_dev[dev_index].shifted_keys;
++        }
++        else
++        if (ev->code == KEY_LEFTSHIFT || ev->code == KEY_RIGHTSHIFT)
++          input_dev[dev_index].shift_keycode = ev->code;
++      }
++      else
++      if (value == EV_KEY_RELEASE)
++      {
++        if (ev->code == KEY_CAPSLOCK)
++        {
++          input_dev[dev_index].caps_active = 1;
++        }
++        else
++        if (ev->code == input_dev[dev_index].shift_keycode)
++        {
++          #if CLASSIC_TYPEWRITER_CAPS == 1
++          input_dev[dev_index].sim_caps_release = 1;
++          #else                                       /* … only release Caps if no */
++          if (input_dev[dev_index].shifted_keys == 0) /* Shift+Key combination has */
++          #endif                                      /* been pressed? */
++            input_dev[dev_index].caps_active = 0;
++
++          input_dev[dev_index].shift_keycode = -1;
++          input_dev[dev_index].shifted_keys  = 0;
++        }
++      }
++    }
++#endif /*added }*/
++
+     /* Filter all repeated events from device.
+        We'll do softrepeat in the server, but only since 1.6 */
+     if (value == 2)
+@@ -291,6 +451,45 @@
+         pQueue->detail.key = code;
+         pQueue->val = value;
+     }
++
++#if CLASSIC_TYPEWRITER_CAPS == 1 /*added {*/
++    if (input_dev[dev_index].sim_caps_release)
++    { EvdevPtr pEvdev = pInfo->private;
++
++    /*if (pEvdev->num_queue >= EVDEV_MAXQUEUE) { <Drop events> }*/
++      if (pEvdev->num_queue <= EVDEV_MAXQUEUE-2)
++      {
++        if ((pQueue = EvdevNextInQueue(pInfo)))
++        {
++            pQueue->type = EV_QUEUE_KEY;
++            pQueue->detail.key = KEY_LEFTSHIFT + MIN_KEYCODE;
++            pQueue->val = EV_KEY_PRESS;
++        }
++
++        if ((pQueue = EvdevNextInQueue(pInfo)))
++        {
++            pQueue->type = EV_QUEUE_KEY;
++            pQueue->detail.key = KEY_LEFTSHIFT + MIN_KEYCODE;
++            pQueue->val = EV_KEY_RELEASE;
++        }
++
++        input_dev[dev_index].sim_caps_release = 0;
++      }
++    }
++
++    #if LOG_KEYBOARD_EVENTS == 1
++    if (log_kbd_events)
++      syslog (LOG_ERR, "fd=%d: caps=%d, shift_keycode=%d, shifted_keys=%d | keycode=%d (%s)\n",
++                       pInfo->fd, input_dev[dev_index].caps_active,
++                                  input_dev[dev_index].shift_keycode,
++                                  input_dev[dev_index].shifted_keys,
++                                  code, (value==EV_KEY_RELEASE?"UP":(value==EV_KEY_PRESS?"DN":"RP")));
++    #endif
++
++    #undef EV_KEY_RELEASE
++    #undef EV_KEY_PRESS
++    #undef EV_KEY_AUTOREPEAT
++#endif /*added }*/
+ }
+
+ void
