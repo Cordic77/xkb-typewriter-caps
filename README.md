@@ -56,7 +56,8 @@ With the provided patch files this works out as follows:
     2.  apt-get build-dep -y libinput10
     3.  apt-get install -y libgtk-3-dev libunwind-dev libsystemd-dev
         check doxygen
-    4.  apt-get install -y python3-sphinx python3-recommonmark python3-sphinx-rtd-theme
+    4.  apt-get install -y python3-pydot python3-sphinx python3-recommonmark
+        python3-sphinx-rtd-theme
     5.  apt-get source libinput10
     6.  patch -p0 \< libinput-1.12.1.patch
     7.  cd libinput-1.12.1
