@@ -23,22 +23,22 @@ However, while XKB\'s *shift:breaks\_caps* option has the same effect as
 loadkeys *Uncaps\_Shift*, pressing *KEY\_CAPSLOCK* still toggles Caps
 lock.
 
-I searched far and wide for a solution to this problem, but to no avail
-… therefore, I decided to take matters in my own hands and, after some
+I searched far and wide for a solution to this problem, but to no avail;
+therefore, I decided to take matters in my own hands and, after some
 research, found out that I could prevent *KEY\_CAPSLOCK* from turning off
 Caps lock by modifying a file called **evdev.c**, that is shipped in one of
 two packages:
 
-1.  X11 based distributions - evdev input driver:\
+1.  X11 based distributions – evdev input driver:\
     **xserver-xorg-input-evdev** package
 
-2.  Wayland based distributions - input device management and event
+2.  Wayland based distributions – input device management and event
     handling library:\
     **libinput10** package
 
 With the provided patch files this works out as follows:
 
-1.  X11 based distributions - evdev input driver:
+1.  X11 based distributions – evdev input driver:
 
     1.  sudo su root
     2.  apt-get build-dep xserver-xorg-input-evdev
@@ -49,7 +49,7 @@ With the provided patch files this works out as follows:
     7.  cp -a src/.libs/evdev\_drv.so
         /usr/lib/xorg/modules/input/evdev\_drv.so
 
-2.  Wayland based distributions - input device management and event
+2.  Wayland based distributions – input device management and event
     handling library:
 
     1.  sudo su root
@@ -67,5 +67,16 @@ With the provided patch files this works out as follows:
     10.  ninja -C build/ install
     11.  udevadm hwdb \--update
 
-Log out, log in, and - et voilá - Caps lock should behave like the Gods
+Log out, log in, and – et voilà – Caps lock should now behave like the Gods
 intended ;-)
+
+N.b.: for the above to work, it is necessary to enable XKB's shift(break_caps)
+option!
+
+Also, there is a small difference between using the accompanying .patch files
+and the pre-patched evdev.c – the latter contains a BACKSLASH_ESC_CANCEL_CAPS
+option, that (if enabled) results in the '#' key, that some keyboards offer,
+to also disable Caps Lock … this is intended for Vim users, who may already
+have mapped this key to 'ESC'; if the BACKSLASH_ESC_CANCEL_CAPS option is
+then enabled on top of that, the '#' key does double duty: besides acting as
+an Escape, it also turns of Caps Lock.
