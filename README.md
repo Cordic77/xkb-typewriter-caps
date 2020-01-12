@@ -29,16 +29,16 @@ research, found out that I could prevent *KEY\_CAPSLOCK* from turning off
 Caps lock by modifying a file called **evdev.c**, that is shipped in one of
 two packages:
 
-1.  X11 based distributions – evdev input driver:\
+1.  X11 based distributions - evdev input driver:\
     **xserver-xorg-input-evdev** package
 
-2.  Wayland based distributions – input device management and event
+2.  Wayland based distributions - input device management and event
     handling library:\
     **libinput10** package
 
 With the provided patch files this works out as follows:
 
-1.  X11 based distributions – evdev input driver:
+1.  X11 based distributions - evdev input driver:
 
     1.  sudo su root
     2.  apt-get build-dep xserver-xorg-input-evdev
@@ -49,22 +49,23 @@ With the provided patch files this works out as follows:
     7.  cp -a src/.libs/evdev\_drv.so
         /usr/lib/xorg/modules/input/evdev\_drv.so
 
-2.  Wayland based distributions – input device management and event
+2.  Wayland based distributions - input device management and event
     handling library:
 
     1.  sudo su root
+    2.  sudo apt-get install -y meson cmake
     2.  apt-get build-dep -y libinput10
     3.  apt-get install -y libgtk-3-dev libunwind-dev libsystemd-dev
-        check doxygen
+        libudev-dev libmtdev-dev libevdev-dev libwacom-dev check doxygen
     4.  apt-get install -y python3-pydot python3-sphinx python3-recommonmark
         python3-sphinx-rtd-theme
     5.  apt-get source libinput10
-    6.  patch -p0 \< libinput-1.12.1.patch
-    7.  cd libinput-1.12.1
+    6.  patch -p0 \< libinput-1.14.1.patch
+    7.  cd libinput-1.14.1
     8.  meson \--prefix=/usr build/
     9.  ninja -C build/
     10.  ninja -C build/ install
     11.  udevadm hwdb \--update
 
-Log out, log in, and – et voilá – Caps lock should behave like the Gods
-intended 🙂
+Log out, log in, and - et voilá - Caps lock should behave like the Gods
+intended ;-)
